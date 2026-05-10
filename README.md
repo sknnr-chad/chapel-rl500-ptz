@@ -8,6 +8,11 @@ toggles** that actually work from a phone.
 No cloud, no accounts, no app to install. Connect to the LAN, open a URL on
 your phone, run the show.
 
+<p align="center">
+  <img src="docs/images/ui-top.png" alt="Phone UI: live preview, presets, D-pad" width="320">
+  <img src="docs/images/ui-bottom.png" alt="Phone UI: zoom controls and Zoom Meeting card with TOGGLE AIR" width="320">
+</p>
+
 ---
 
 ## Why this exists
