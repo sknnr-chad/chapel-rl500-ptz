@@ -641,6 +641,16 @@ INDEX_HTML = r"""<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Chapel RL500 PTZ</title>
+  <!-- PWA: lets the operator "Add to Home Screen" and launch full-screen,
+       which on a phone-as-controller is a big deal (no browser chrome
+       eating screen space). Wake Lock proper requires HTTPS; the inline
+       fallback below keeps the screen on over plain HTTP/LAN too. -->
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="apple-touch-icon" href="/static/icon.svg" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="pew-ptz" />
+  <meta name="theme-color" content="#0f172a" />
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -1036,6 +1046,73 @@ INDEX_HTML = r"""<!doctype html>
   }
   refreshZoomStatus();
   setInterval(refreshZoomStatus, 2000);
+
+  // ---- keep screen awake while operating ----
+  // Tries the Wake Lock API first (works in secure contexts: HTTPS,
+  // localhost, or PWA installed from HTTPS). On plain HTTP/LAN — which
+  // is the default deployment — both Wake Lock and Service Worker are
+  // unavailable, so we fall back to playing a tiny silent looped video
+  // (the NoSleep.js trick) which most mobile browsers honor by NOT
+  // sleeping the screen.
+  //
+  // Both paths arm on the first user gesture (browser autoplay rules)
+  // and re-engage when the tab becomes visible again, since the OS
+  // releases the lock when the page is backgrounded.
+  //
+  // Video assets adapted from NoSleep.js (MIT, Rich Tibbett).
+  (function() {
+    let wakeLock = null;
+    let video = null;
+    let armed = false;
+
+    function makeVideo() {
+      const v = document.createElement("video");
+      v.setAttribute("playsinline", "");
+      v.setAttribute("muted", "");
+      v.setAttribute("loop", "");
+      v.muted = true;
+      v.loop = true;
+      v.style.cssText = "position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-10px;top:-10px;";
+      const s1 = document.createElement("source");
+      s1.src = "/static/silent.webm"; s1.type = "video/webm";
+      const s2 = document.createElement("source");
+      s2.src = "/static/silent.mp4"; s2.type = "video/mp4";
+      v.appendChild(s1); v.appendChild(s2);
+      document.body.appendChild(v);
+      return v;
+    }
+
+    async function tryNativeLock() {
+      if (!("wakeLock" in navigator)) return false;
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { wakeLock = null; });
+        return true;
+      } catch (e) { return false; }
+    }
+
+    async function tryVideoFallback() {
+      if (!video) video = makeVideo();
+      try { await video.play(); return true; } catch (e) { return false; }
+    }
+
+    async function enable() {
+      if (await tryNativeLock()) return;
+      await tryVideoFallback();
+    }
+
+    async function armOnce() {
+      if (armed) return;
+      armed = true;
+      document.removeEventListener("pointerdown", armOnce);
+      await enable();
+    }
+
+    document.addEventListener("pointerdown", armOnce, { once: true });
+    document.addEventListener("visibilitychange", () => {
+      if (armed && document.visibilityState === "visible") enable();
+    });
+  })();
 
   // ---- rule-of-thirds overlay toggle ----
   // Defaults ON; persists per-device in localStorage so each operator's
