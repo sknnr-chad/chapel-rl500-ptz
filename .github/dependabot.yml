@@ -20,19 +20,7 @@ updates:
           - "minor"
           - "patch"
 
-  # GitHub Actions — keeps any future workflows in .github/workflows
-  # current automatically. Safe to ship even with zero workflows today.
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "github-actions"
-    groups:
-      actions-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
+  # NOTE: no github-actions block yet — Dependabot errors with
+  # "dependency_file_not_found" if the ecosystem is configured but no
+  # workflows exist. Add a block here in the same PR that introduces the
+  # first .github/workflows/*.yml file.
