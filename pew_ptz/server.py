@@ -669,6 +669,38 @@ INDEX_HTML = r"""<!doctype html>
       width: 100%; height: 100%; display: block; object-fit: cover;
       background: #000;
     }
+    /* Rule-of-thirds composition overlay. Lines stay 1px regardless of
+       the preview's rendered size (vector-effect + preserveAspectRatio).
+       The drop-shadow gives a soft halo so the lines read on both bright
+       windows and dark stage backdrops without doubling the markup. */
+    .thirds-overlay {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      filter: drop-shadow(0 0 2px rgba(0,0,0,0.75));
+    }
+    .thirds-overlay line {
+      stroke: rgba(255,255,255,0.72);
+      stroke-width: 1.25;
+      vector-effect: non-scaling-stroke;
+    }
+    .preview-wrap.no-thirds .thirds-overlay { display: none; }
+    .thirds-toggle {
+      /* Bottom-right, out of the way of the fixed admin gear top-right. */
+      position: absolute; bottom: 8px; right: 8px;
+      width: 34px; height: 34px;
+      padding: 0;
+      background: rgba(0,0,0,0.5);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0.4;
+      transition: opacity 0.15s;
+      z-index: 2;
+    }
+    .thirds-toggle:hover, .thirds-toggle:active { opacity: 1; }
+    .thirds-toggle:active { background: rgba(0,0,0,0.7); transform: scale(0.95); }
+    .thirds-toggle svg { width: 18px; height: 18px; fill: none; stroke: white; stroke-width: 1.6; }
+    .preview-wrap.no-thirds .thirds-toggle svg { opacity: 0.45; }
     .dpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
             max-width: 280px; margin-inline: auto; }
     .dpad button { height: 76px; font-size: 1.6rem; }
@@ -755,9 +787,18 @@ INDEX_HTML = r"""<!doctype html>
   <div class="admin-fab" id="adminFab" aria-label="log out" style="font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:#94a3b8;">OUT</div>
   {% endif %}
 
-  <div class="preview-wrap">
+  <div class="preview-wrap" id="previewWrap">
     <img id="preview" alt="Live preview"
          src="http://{{ camera_ip }}{{ camera_snapshot_path }}" />
+    <svg class="thirds-overlay" viewBox="0 0 300 300" preserveAspectRatio="none" aria-hidden="true">
+      <line x1="0"   y1="100" x2="300" y2="100" />
+      <line x1="0"   y1="200" x2="300" y2="200" />
+      <line x1="100" y1="0"   x2="100" y2="300" />
+      <line x1="200" y1="0"   x2="200" y2="300" />
+    </svg>
+    <button class="thirds-toggle" id="thirdsToggle" aria-label="Toggle rule-of-thirds overlay">
+      <svg viewBox="0 0 24 24"><path d="M2 8 H22 M2 16 H22 M8 2 V22 M16 2 V22" /></svg>
+    </button>
   </div>
 
   <div class="card">
@@ -995,6 +1036,23 @@ INDEX_HTML = r"""<!doctype html>
   }
   refreshZoomStatus();
   setInterval(refreshZoomStatus, 2000);
+
+  // ---- rule-of-thirds overlay toggle ----
+  // Defaults ON; persists per-device in localStorage so each operator's
+  // phone remembers its own preference.
+  (function() {
+    const wrap = document.getElementById("previewWrap");
+    const btn = document.getElementById("thirdsToggle");
+    const KEY = "pew_ptz_thirds";
+    const saved = localStorage.getItem(KEY);
+    const startOn = saved === null ? true : saved === "on";
+    wrap.classList.toggle("no-thirds", !startOn);
+    btn.addEventListener("click", () => {
+      wrap.classList.toggle("no-thirds");
+      const nowOn = !wrap.classList.contains("no-thirds");
+      localStorage.setItem(KEY, nowOn ? "on" : "off");
+    });
+  })();
 
   // ---- live snapshot preview ----
   // Poll the camera's snapshot URL (configured server-side) and swap into the
