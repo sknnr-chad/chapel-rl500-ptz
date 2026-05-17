@@ -124,9 +124,10 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
   restart-on-failure (runs under the user session so `pynput` can reach Zoom)
 - Drop a desktop shortcut to `http://localhost:8080`
 - Prompt for the initial **user** and **admin** PINs (see [Authentication](#authentication)).
-  On re-runs, offers a Keep/Replace menu. Pass `-PinSetup Skip` to leave PINs
-  untouched, `-PinSetup Force` to re-prompt for both, or `-NoAuth` to run open
-  with no PIN lock (trusted-LAN deployments).
+  On re-runs, offers a Keep/Replace/Delete menu. Pass `-PinSetup Skip` to
+  leave PINs untouched, `-PinSetup Force` to re-prompt for both, `-NoAuth` to
+  run open with no PIN lock (trusted-LAN deployments), or `-RemovePins` to
+  delete the PIN store entirely and run open.
 
 Defaults match the reference deployment: install dir `C:\tools\pew-ptz`,
 operator user `Chapel-AV`. Override with
@@ -198,6 +199,12 @@ prompt. The choice sticks across re-runs of the installer (it reads the
 existing `launch.cmd`); switch back to PINs later with `-PinSetup Force`.
 Without the installer, just set `PEW_PTZ_AUTH_DISABLED=1` in the
 environment.
+
+**Decided you don't want the feature at all?** Pass `-RemovePins` to the
+installer (or pick `[D] Delete PIN store and run open` from the menu on
+re-run). This deletes `auth.json` (PIN hashes + the persistent session
+secret) and configures the launcher to run open. Re-enabling PINs later
+means setting them from scratch.
 
 ### First-time PIN setup
 

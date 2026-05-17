@@ -42,6 +42,15 @@
   trusted home LANs where you don't want a login screen. Subsequent runs
   remember this choice (detected by reading the existing launch.cmd) so
   you don't have to re-pass the flag. Switch back to PINs with -PinSetup Force.
+
+  Note: -NoAuth leaves any existing auth.json on disk so PINs can be
+  re-enabled later. To wipe the PIN store entirely, use -RemovePins.
+
+.PARAMETER RemovePins
+  Destructive: delete auth.json (PIN hashes + persistent session secret)
+  and run open. Use when you're done with PIN authentication for good.
+  Implies -NoAuth (the launcher will set PEW_PTZ_AUTH_DISABLED=1). To
+  re-enable PINs later you'll have to set them from scratch.
 #>
 [CmdletBinding()]
 param(
@@ -51,7 +60,8 @@ param(
   [string]$TaskName   = "Pew PTZ Controller",
   [ValidateSet("Auto","Skip","Force")]
   [string]$PinSetup   = "Auto",
-  [switch]$NoAuth
+  [switch]$NoAuth,
+  [switch]$RemovePins
 )
 
 $ErrorActionPreference = "Stop"
@@ -121,7 +131,7 @@ Write-OK "Package installed"
 
 # ---- Authentication setup -------------------------------------------------
 # Two layers of choice:
-#   1. Whether to enable PIN auth at all (-NoAuth or interactive prompt)
+#   1. Whether to enable PIN auth at all (-NoAuth, -RemovePins, or prompt)
 #   2. If enabled, what to do about the actual PINs (-PinSetup Auto/Skip/Force)
 # The auth-on/off decision is preserved across re-runs by reading the
 # existing launch.cmd. PINs themselves live in <InstallDir>\auth.json — the
@@ -136,9 +146,24 @@ if (Test-Path $launcher) {
 }
 $env:PEW_PTZ_STATE_DIR = $InstallDir
 
+function Remove-PinStore {
+  if (Test-Path $authJson) {
+    Remove-Item -Path $authJson -Force
+    Write-Note "Deleted PIN store: $authJson"
+  }
+  $tmp = "$authJson.tmp"
+  if (Test-Path $tmp) { Remove-Item -Path $tmp -Force }
+}
+
 # Decide whether auth is on or off for this install.
 $script:authEnabled = $true
-if ($NoAuth) {
+if ($RemovePins) {
+  Remove-PinStore
+  $pinExists = $false
+  $script:authEnabled = $false
+  Write-Note "-RemovePins specified — PIN store deleted, running open"
+}
+elseif ($NoAuth) {
   $script:authEnabled = $false
   Write-Note "-NoAuth specified — running open (no PIN lock)"
 }
@@ -146,6 +171,7 @@ elseif ($previouslyNoAuth -and $PinSetup -ne 'Force') {
   $script:authEnabled = $false
   Write-Note "Previous install was running open. Keeping it that way."
   Write-Note "  To switch to PINs: re-run with -PinSetup Force"
+  Write-Note "  To wipe the existing PIN store too: re-run with -RemovePins"
 }
 elseif (-not $pinExists -and $PinSetup -ne 'Skip') {
   # First-time install (no prior decision) — ask
@@ -191,6 +217,7 @@ else {
     Write-Host "    [B] Replace both"
     Write-Host "    [U] Replace user PIN only"
     Write-Host "    [A] Replace admin PIN only"
+    Write-Host "    [D] Delete PIN store and run open"
     $choice = (Read-Host "  Choice [K]").Trim().ToUpper()
     if (-not $choice) { $choice = "K" }
     switch ($choice) {
@@ -198,15 +225,23 @@ else {
       "B" { $rolesToSet = @("user","admin") }
       "U" { $rolesToSet = @("user") }
       "A" { $rolesToSet = @("admin") }
+      "D" {
+        Remove-PinStore
+        $pinExists = $false
+        $script:authEnabled = $false
+        Write-OK "PIN store deleted. Server will run open."
+      }
       default { Write-Note "Unrecognized choice '$choice' — keeping existing PINs." }
     }
   }
 
-  foreach ($role in $rolesToSet) {
-    Write-Note "Setting $role PIN (typing is hidden — no echo or asterisks)"
-    Invoke-AuthSet $role
+  if ($script:authEnabled) {
+    foreach ($role in $rolesToSet) {
+      Write-Note "Setting $role PIN (typing is hidden — no echo or asterisks)"
+      Invoke-AuthSet $role
+    }
+    if (Test-Path $authJson) { Write-OK "PIN store: $authJson" }
   }
-  if (Test-Path $authJson) { Write-OK "PIN store: $authJson" }
 }
 
 Write-Step "Creating logs directory"
