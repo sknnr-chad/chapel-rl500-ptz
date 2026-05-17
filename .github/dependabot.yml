@@ -1,0 +1,38 @@
+version: 2
+
+updates:
+  # Python runtime dependencies declared in pyproject.toml.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    groups:
+      # Bundle minor + patch bumps into one PR per ecosystem to cut noise.
+      # Major bumps still get their own PR so the breaking-change review
+      # is forced.
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions — keeps any future workflows in .github/workflows
+  # current automatically. Safe to ship even with zero workflows today.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
