@@ -646,7 +646,9 @@ INDEX_HTML = r"""<!doctype html>
        eating screen space). Wake Lock proper requires HTTPS; the inline
        fallback below keeps the screen on over plain HTTP/LAN too. -->
   <link rel="manifest" href="/static/manifest.json" />
-  <link rel="apple-touch-icon" href="/static/icon.svg" />
+  <!-- apple-touch-icon: iOS works with PNG on all versions and SVG only on
+       14+. PNG it is — keeps older devices working too. -->
+  <link rel="apple-touch-icon" href="/static/icon-192.png" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="pew-ptz" />
