@@ -1,9 +1,11 @@
 /* Steampunk dial-lock — driven by window.PEW_LOCK from the server template.
  *
- * The skin's job: render 4 dials, let the user pick a digit on each, POST
- * {pin: "1234"} to cfg.submitUrl when all four have been touched and have
- * been idle for SUBMIT_DEBOUNCE_MS, and visually react to the response.
- * Auth itself lives entirely server-side in pew_ptz.auth.
+ * The skin's job: render 4 dials, let the user pick a digit on each, then
+ * POST {pin: "1234"} to cfg.submitUrl when the operator taps the UNLOCK
+ * button. (Earlier versions auto-submitted on the 4th-dial settle, but
+ * that made any PIN starting or ending in 0 impossible to enter without
+ * pointlessly toggling the dial — explicit button it is.) Auth itself
+ * lives entirely server-side in pew_ptz.auth.
  *
  * Dial mechanic: each dial is a "drum" rendered as 3 stacked copies of 0-9
  * (so dragging across the 9→0 boundary stays visually continuous). After
@@ -19,11 +21,11 @@
   const DIGITS = 10;
   const COPIES = 3;
   const CENTER_COPY = 1;
-  const SUBMIT_DEBOUNCE_MS = 350;
   const SNAP_MS = 280;
 
   const plate = document.getElementById("plate");
   const statusEl = document.getElementById("status");
+  const unlockBtn = document.getElementById("unlockBtn");
   const dials = Array.from(document.querySelectorAll(".dial"));
 
   function buildStrip(strip) {
@@ -42,7 +44,6 @@
     el: d,
     strip: d.querySelector(".strip"),
     position: 0,
-    touched: false,
     pointerId: null,
     dragStartY: 0,
     dragStartPosition: 0,
@@ -84,17 +85,6 @@
     scheduleNormalize(s);
   }
 
-  let submitTimer = null;
-  function scheduleSubmit() {
-    if (cfg.lockoutSecondsRemaining > 0) return;
-    if (!state.every((x) => x.touched)) return;
-    clearTimeout(submitTimer);
-    submitTimer = setTimeout(submit, SUBMIT_DEBOUNCE_MS);
-  }
-  function cancelSubmit() {
-    clearTimeout(submitTimer);
-  }
-
   function currentPin() {
     return state.map(digitAt).join("");
   }
@@ -108,7 +98,6 @@
       s.dragStartY = e.clientY;
       s.dragStartPosition = s.position;
       s.didDrag = false;
-      cancelSubmit();
       clearTimeout(s.normalizeTimer);
     });
     s.el.addEventListener("pointermove", (e) => {
@@ -130,9 +119,7 @@
         const delta = localY < rect.height / 2 ? +1 : -1;
         s.position = Math.round(s.position) + delta;
       }
-      s.touched = true;
       snap(s);
-      scheduleSubmit();
     };
     s.el.addEventListener("pointerup", release);
     s.el.addEventListener("pointercancel", release);
@@ -155,14 +142,23 @@
 
   function resetDials() {
     state.forEach((s) => {
-      s.touched = false;
       s.position = 0;
       clearTimeout(s.normalizeTimer);
       applyTransform(s, true);
     });
   }
 
+  let inFlight = false;
+  function setButtonEnabled(enabled) {
+    if (!unlockBtn) return;
+    unlockBtn.disabled = !enabled;
+  }
+
   async function submit() {
+    if (inFlight) return;
+    if (cfg.lockoutSecondsRemaining > 0) return;
+    inFlight = true;
+    setButtonEnabled(false);
     const pin = currentPin();
     setStatus("Checking…", "busy");
     let res;
@@ -180,6 +176,8 @@
     } catch (e) {
       setStatus("Network error", "error");
       shake();
+      inFlight = false;
+      setButtonEnabled(true);
       return;
     }
     let data = {};
@@ -191,7 +189,7 @@
         const dest = data.redirect || cfg.onSuccessUrl || "/";
         window.location.href = dest;
       }, 280);
-      return;
+      return;  // leave inFlight true — navigating away
     }
 
     if (res.status === 429 && data.lockout_seconds_remaining) {
@@ -199,18 +197,27 @@
       startCountdown(data.lockout_seconds_remaining);
       shake();
       resetDials();
+      inFlight = false;
+      // Button stays disabled — countdown re-enables it.
       return;
     }
 
     setStatus(data.error || "Wrong PIN", "error");
     shake();
     resetDials();
+    inFlight = false;
+    setButtonEnabled(true);
+  }
+
+  if (unlockBtn) {
+    unlockBtn.addEventListener("click", submit);
   }
 
   let countdownTimer = null;
   function startCountdown(seconds) {
     let remaining = seconds;
     clearInterval(countdownTimer);
+    setButtonEnabled(false);
     const render = () => setStatus(`Locked. Try again in ${remaining}s`, "locked");
     render();
     countdownTimer = setInterval(() => {
@@ -219,6 +226,7 @@
         clearInterval(countdownTimer);
         cfg.lockoutSecondsRemaining = 0;
         setStatus(cfg.idleMessage, "idle");
+        setButtonEnabled(true);
       } else {
         render();
       }
