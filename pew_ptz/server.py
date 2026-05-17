@@ -440,9 +440,10 @@ def _render_lock(**overrides) -> str:
         "title": "PEW · PTZ",
         "subtitle": "Enter PIN",
         "submit_url": "/login",
+        "submit_label": "UNLOCK",
         "on_success_url": "/",
         "mode": "login",
-        "idle_message": "Rotate the dials — auto-submits at 4 digits",
+        "idle_message": "Dial in your PIN, then tap UNLOCK",
         "error_message": None,
         "lockout_seconds_remaining": 0,
         "extra_payload": {},
@@ -564,8 +565,9 @@ def admin_change_pin_step1():
         subtitle="Confirm ADMIN PIN to continue",
         mode="reverify",
         submit_url="/admin/reverify",
+        submit_label="CONFIRM",
         on_success_url=url_for("admin_change_pin_step2", role=role),
-        idle_message="Confirm admin PIN — auto-submits at 4 digits",
+        idle_message="Dial admin PIN, then tap CONFIRM",
         cancel_url="/",
     )
 
@@ -603,8 +605,9 @@ def admin_change_pin_step2():
         subtitle=f"Enter new {role.upper()} PIN",
         mode="set-pin",
         submit_url="/admin/pin",
+        submit_label="SAVE PIN",
         on_success_url="/",
-        idle_message="New PIN — auto-submits at 4 digits",
+        idle_message="Dial new PIN, then tap SAVE PIN",
         extra_payload={"role": role},
         cancel_url="/",
     )

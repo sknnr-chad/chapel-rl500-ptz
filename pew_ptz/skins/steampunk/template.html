@@ -40,6 +40,7 @@
           {{ lock.idle_message }}
         {%- endif -%}
       </div>
+      <button class="unlock-btn" id="unlockBtn" type="button">{{ lock.submit_label }}</button>
       <div class="rivets-row">
         <span class="rivet"></span><span class="rivet"></span>
         <span class="rivet"></span><span class="rivet"></span>
@@ -57,7 +58,7 @@
       mode: {{ lock.mode | tojson }},
       lockoutSecondsRemaining: {{ (lock.lockout_seconds_remaining or 0) | tojson }},
       extraPayload: {{ (lock.extra_payload or {}) | tojson }},
-      idleMessage: {{ (lock.idle_message or 'Rotate the dials — auto-submits at 4 digits') | tojson }},
+      idleMessage: {{ (lock.idle_message or 'Dial in your PIN, then tap UNLOCK') | tojson }},
     };
   </script>
   <script src="/skin/{{ lock.skin_name }}/lock.js"></script>

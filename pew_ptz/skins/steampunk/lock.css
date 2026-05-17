@@ -243,6 +243,46 @@ body.skin-steampunk {
 .status[data-mode="success"] { color: var(--status-success); }
 .status[data-mode="busy"]    { color: var(--status-idle); opacity: 0.7; }
 
+/* Brass lever — the explicit unlock action. Chunky 3D press effect via
+   layered shadows so it reads as a physical handle on the plate. */
+.unlock-btn {
+  display: block;
+  width: 100%;
+  margin: 14px 0 4px;
+  padding: 14px;
+  font-family: "Georgia", "Times New Roman", serif;
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.32em;
+  color: var(--engraved);
+  background: linear-gradient(180deg,
+    var(--brass-light) 0%,
+    var(--brass) 45%,
+    var(--brass-dark) 100%);
+  border: 1px solid var(--brass-shadow);
+  border-radius: 8px;
+  cursor: pointer;
+  text-shadow: 0 1px 0 rgba(255, 235, 180, 0.45);
+  box-shadow:
+    0 3px 0 var(--brass-shadow),
+    0 4px 8px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 235, 180, 0.5);
+  transition: transform 0.05s, box-shadow 0.05s;
+  position: relative;
+  z-index: 1;
+}
+.unlock-btn:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow:
+    0 1px 0 var(--brass-shadow),
+    0 2px 4px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 235, 180, 0.35);
+}
+.unlock-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 @keyframes plate-shake {
   0%, 100% { transform: translateX(0); }
   15% { transform: translateX(-10px); }
