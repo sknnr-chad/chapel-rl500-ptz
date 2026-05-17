@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>{{ lock.title }}</title>
+  <link rel="stylesheet" href="/skin/{{ lock.skin_name }}/lock.css">
+</head>
+<body class="skin-{{ lock.skin_name }}">
+  <div class="stage">
+    <div class="plate" id="plate">
+      <div class="rivets-row">
+        <span class="rivet"></span><span class="rivet"></span>
+        <span class="rivet"></span><span class="rivet"></span>
+        <span class="rivet"></span>
+      </div>
+      <div class="title">{{ lock.title }}</div>
+      <div class="subtitle">{{ lock.subtitle }}</div>
+      <div class="dials" id="dials">
+        <div class="dial" data-idx="0"><div class="window"><div class="strip"></div></div></div>
+        <div class="dial" data-idx="1"><div class="window"><div class="strip"></div></div></div>
+        <div class="dial" data-idx="2"><div class="window"><div class="strip"></div></div></div>
+        <div class="dial" data-idx="3"><div class="window"><div class="strip"></div></div></div>
+      </div>
+      <div class="status" id="status"
+           data-mode="{% if lock.lockout_seconds_remaining %}locked{% elif lock.error_message %}error{% else %}idle{% endif %}">
+        {%- if lock.lockout_seconds_remaining -%}
+          Locked. Try again in {{ lock.lockout_seconds_remaining }}s
+        {%- elif lock.error_message -%}
+          {{ lock.error_message }}
+        {%- else -%}
+          {{ lock.idle_message }}
+        {%- endif -%}
+      </div>
+      <div class="rivets-row">
+        <span class="rivet"></span><span class="rivet"></span>
+        <span class="rivet"></span><span class="rivet"></span>
+        <span class="rivet"></span>
+      </div>
+    </div>
+    {% if lock.cancel_url %}
+      <a class="cancel" href="{{ lock.cancel_url }}">&larr; cancel</a>
+    {% endif %}
+  </div>
+  <script>
+    window.PEW_LOCK = {
+      submitUrl: {{ lock.submit_url | tojson }},
+      onSuccessUrl: {{ lock.on_success_url | tojson }},
+      mode: {{ lock.mode | tojson }},
+      lockoutSecondsRemaining: {{ (lock.lockout_seconds_remaining or 0) | tojson }},
+      extraPayload: {{ (lock.extra_payload or {}) | tojson }},
+      idleMessage: {{ (lock.idle_message or 'Rotate the dials — auto-submits at 4 digits') | tojson }},
+    };
+  </script>
+  <script src="/skin/{{ lock.skin_name }}/lock.js"></script>
+</body>
+</html>

@@ -123,6 +123,10 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 - Register a Scheduled Task **At logon of the operator user** with
   restart-on-failure (runs under the user session so `pynput` can reach Zoom)
 - Drop a desktop shortcut to `http://localhost:8080`
+- Prompt for the initial **user** and **admin** PINs (see [Authentication](#authentication)).
+  On re-runs, offers a Keep/Replace menu. Pass `-PinSetup Skip` to leave PINs
+  untouched, `-PinSetup Force` to re-prompt for both, or `-NoAuth` to run open
+  with no PIN lock (trusted-LAN deployments).
 
 Defaults match the reference deployment: install dir `C:\tools\pew-ptz`,
 operator user `Chapel-AV`. Override with
@@ -169,6 +173,87 @@ All config is environment variables. No config file, no secrets.
 | `PEW_PTZ_PRESETS` | (9 chapel presets) | Comma-separated. Slot N on the camera maps to the Nth name (1-indexed). Example: `Wide,Speaker,Audience,Stage Left,Stage Right` |
 | `PEW_PTZ_LOG_DIR` | unset | If set, writes `server.log` (rotating, 1 MB × 5) here. The installer points this at `<InstallDir>\logs`. |
 | `PEW_PTZ_SKIP_FOCUS_CHECK` | unset | Set to `1` to bypass the "Zoom must be foreground" guard. Useful for UI testing on a dev box without Zoom. |
+| `PEW_PTZ_STATE_DIR` | cwd | Where `auth.json` lives. The installer points this at `<InstallDir>`. |
+| `PEW_PTZ_AUTH_SKIN` | `steampunk` | Which skin renders the lock screen. See `pew_ptz/skins/` for available skins. |
+| `PEW_PTZ_SESSION_HOURS` | `8` | Absolute session lifetime. A Sunday block fits comfortably. |
+| `PEW_PTZ_AUTH_DISABLED` | unset | Set to `1` to run open (no PIN lock). The installer wires this up for you when you pass `-NoAuth` or answer "n" to the enable prompt. The server logs a loud warning at startup. |
+
+---
+
+## Authentication
+
+The app gates access behind a steampunk-themed 4-digit lock with two roles:
+
+- **user** — full camera + Zoom control (the operator's PIN)
+- **admin** — same plus the ability to change either PIN and the
+  Zoom UIA debug endpoint
+
+PIN entry is a horizontal row of brass dials; auto-submits when all four
+settle on a digit. Wrong PIN shakes the plate and resets. Five wrong
+attempts from an IP triggers a 30-second cooldown.
+
+**Auth is optional.** On a fully trusted home LAN you can run open with no
+lock screen — pass `-NoAuth` to the installer, or answer "n" to its enable
+prompt. The choice sticks across re-runs of the installer (it reads the
+existing `launch.cmd`); switch back to PINs later with `-PinSetup Force`.
+Without the installer, just set `PEW_PTZ_AUTH_DISABLED=1` in the
+environment.
+
+### First-time PIN setup
+
+The installer prompts for both PINs on first run. On re-runs it shows a
+Keep / Replace menu — pick `K` to leave them alone, `B` to replace both,
+or `U`/`A` to rotate just one.
+
+You can also set or rotate PINs manually:
+
+```powershell
+cd C:\tools\pew-ptz
+$env:PEW_PTZ_STATE_DIR = "C:\tools\pew-ptz"
+.\.venv\Scripts\python.exe -m pew_ptz.auth set --role user
+.\.venv\Scripts\python.exe -m pew_ptz.auth set --role admin
+.\.venv\Scripts\python.exe -m pew_ptz.auth status   # show last-changed dates
+```
+
+PINs never appear in process arguments or shell history — the CLI prompts
+via `getpass`.
+
+### Rotating PINs from the phone (admin only)
+
+Log in with the admin PIN, tap the gear icon in the top-right, choose
+**Change user PIN** or **Change admin PIN**. The flow asks for the current
+admin PIN once (defense against an unlocked tablet on a counter), then
+asks for the new PIN. Other phones with active sessions stay logged in —
+PIN rotation doesn't invalidate the session secret.
+
+### Recovery — "I forgot the admin PIN"
+
+On the chapel PC:
+
+```powershell
+cd C:\tools\pew-ptz
+$env:PEW_PTZ_STATE_DIR = "C:\tools\pew-ptz"
+.\.venv\Scripts\python.exe -m pew_ptz.auth reset
+.\.venv\Scripts\python.exe -m pew_ptz.auth set --role user
+.\.venv\Scripts\python.exe -m pew_ptz.auth set --role admin
+```
+
+This deletes `auth.json` and lets you re-seed both PINs. The session
+secret is regenerated, so any logged-in phones will be bounced to the lock.
+
+### What's NOT gated
+
+The camera's live snapshot stream goes **directly from the phone to the
+camera** (see the `<img src="http://{camera_ip}/snapshot.jpg">` in the UI).
+Anyone on the LAN who knows the camera IP can pull frames whether or not
+they have a PIN. The camera was already reachable directly; proxying it
+through Flask would add Python in the 400ms snapshot hot path for no
+real gain in a LAN-only deployment. If you care about gating the video,
+restrict the camera's own network access.
+
+`/healthz` is also unauthenticated so external monitoring can hit it. It
+discloses camera IP, foreground process, and keyboard status — fine on a
+trusted LAN.
 
 ---
 
@@ -207,6 +292,13 @@ pew_ptz/
   server.py          # Flask app + inline HTML/CSS/JS UI
   visca.py           # VISCA-over-IP transport + command builders
   zoom_state.py      # UIA-based Zoom mute/video state reader (Windows)
+  auth.py            # PIN store, rate limiter, decorators, CLI
+  skins.py           # lock-screen skin loader
+  skins/
+    steampunk/       # default skin — brass dials on dark wood
+      template.html
+      lock.css
+      lock.js
 scripts/
   install.ps1        # one-shot installer (run as Administrator)
   uninstall.ps1

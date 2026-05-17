@@ -27,6 +27,13 @@ Config via environment variables:
                                   logs only to stdout
     PEW_PTZ_SKIP_FOCUS_CHECK      set to 1 to bypass the "Zoom must be
                                   foreground" guard (useful for UI testing)
+    PEW_PTZ_STATE_DIR             where auth.json lives. Default: cwd. The
+                                  installer points this at <InstallDir>.
+    PEW_PTZ_AUTH_SKIN             which skin renders the lock screen.
+                                  Default: steampunk
+    PEW_PTZ_SESSION_HOURS         absolute session lifetime in hours.
+                                  Default: 8 (covers a Sunday block)
+    PEW_PTZ_AUTH_DISABLED         set to 1 to bypass auth entirely (dev only)
 """
 
 from __future__ import annotations
@@ -37,10 +44,19 @@ import os
 import sys
 import time
 from ctypes import wintypes
+from datetime import timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from flask import Flask, jsonify, render_template_string, request
+from flask import (
+    Flask, abort, jsonify, redirect, render_template_string, request,
+    send_from_directory, session, url_for,
+)
 
+from pew_ptz import skins as skins_mod
+from pew_ptz.auth import (
+    PinStore, RateLimiter, auth_disabled, current_role,
+    require_admin, require_auth,
+)
 from pew_ptz.visca import (
     ViscaIP,
     PAN_LEFT, PAN_RIGHT, PAN_STOP,
@@ -64,6 +80,9 @@ PRESETS = [
     ).split(",") if p.strip()
 ]
 SKIP_FOCUS_CHECK = _env("SKIP_FOCUS_CHECK", "").lower() in ("1", "true", "yes")
+STATE_DIR = Path(_env("STATE_DIR", os.getcwd()))
+SESSION_HOURS = int(_env("SESSION_HOURS", "8"))
+ADMIN_REVERIFY_WINDOW_SEC = 120  # how long an admin re-verify is good for
 
 # Log to a rotating file when PEW_PTZ_LOG_DIR is set (the Task Scheduler launch
 # uses pythonw.exe so stdout is gone — without this we'd be flying blind).
@@ -90,6 +109,27 @@ camera = ViscaIP(CAMERA_IP, VISCA_PORT)
 app = Flask(__name__)
 START_TIME = time.time()
 zoom_reader = ZoomStateReader(poll_interval=1.5)
+
+# ---- Auth bootstrap ------------------------------------------------------
+# Load the PIN store (env-seeded on first run, file-persisted thereafter) and
+# the active skin. SECRET_KEY is auto-generated into auth.json the first time
+# we start with no store, then persisted forever so phone sessions survive
+# server restarts. Without that, every Task Scheduler restart would boot the
+# operator back to the lock mid-meeting.
+pin_store = PinStore(STATE_DIR)
+pin_store.load()
+active_skin = skins_mod.load_active()
+rate_limiter = RateLimiter()
+
+app.secret_key = pin_store.secret_key
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Strict",
+    # SESSION_COOKIE_SECURE is intentionally NOT set — this app runs on
+    # HTTP over the LAN. Setting it would prevent the cookie from ever
+    # being sent and lock everyone out.
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_HOURS),
+)
 
 # ---- Zoom hotkeys (Windows-only via pynput) ------------------------------
 
@@ -233,16 +273,23 @@ DIRS = {
 # ---- Routes --------------------------------------------------------------
 
 @app.route("/")
+@require_auth
 def index():
+    # auth_enabled gates the gear / OUT button: when running open there's
+    # no session to log out of and no PINs to rotate, so the controls
+    # would just be confusing.
     return render_template_string(
         INDEX_HTML,
         camera_ip=CAMERA_IP,
         camera_snapshot_path=CAMERA_SNAPSHOT_PATH,
         presets=PRESETS,
+        role=current_role(),
+        auth_enabled=not auth_disabled(),
     )
 
 
 @app.post("/ptz/move/<direction>")
+@require_auth
 def ptz_move(direction: str):
     if direction not in DIRS:
         return jsonify({"error": "unknown direction"}), 400
@@ -253,12 +300,14 @@ def ptz_move(direction: str):
 
 
 @app.post("/ptz/stop")
+@require_auth
 def ptz_stop():
     camera.pan_tilt_stop()
     return jsonify({"status": "stopped"})
 
 
 @app.post("/zoom/<action>")
+@require_auth
 def zoom_action(action: str):
     speed = int(request.args.get("speed", "2"))
     if action == "tele":
@@ -273,17 +322,20 @@ def zoom_action(action: str):
 
 
 @app.post("/preset/recall/<int:n>")
+@require_auth
 def preset_recall(n: int):
     camera.preset_recall(n)
     return jsonify({"status": f"recalled preset {n}"})
 
 
 @app.get("/zoom_meeting/debug")
+@require_admin
 def http_zoom_debug():
     """Lists top-level windows and (for Zoom-ish ones) all button names.
     Used to figure out why UIA can't find the meeting window on a given
     Zoom build — point a browser at this while in a meeting and look for
-    the Mute/Video button labels."""
+    the Mute/Video button labels. Admin-only — it enumerates running
+    processes."""
     return jsonify(zoom_reader.debug_snapshot())
 
 
@@ -301,6 +353,7 @@ def healthz():
 
 
 @app.get("/zoom_meeting/state")
+@require_auth
 def http_zoom_state():
     return jsonify(_public_state())
 
@@ -317,6 +370,7 @@ def _sync_optimistic_from_uia():
 
 
 @app.post("/zoom_meeting/toggle_video")
+@require_auth
 def http_toggle_video():
     blocked = _focus_block()
     if blocked:
@@ -331,6 +385,7 @@ def http_toggle_video():
 
 
 @app.post("/zoom_meeting/toggle_mic")
+@require_auth
 def http_toggle_mic():
     blocked = _focus_block()
     if blocked:
@@ -345,6 +400,7 @@ def http_toggle_mic():
 
 
 @app.post("/zoom_meeting/toggle_air")
+@require_auth
 def http_toggle_air():
     """Toggle both video and mic together — the 'panic' button."""
     if _kbd is None:
@@ -361,6 +417,220 @@ def http_toggle_air():
     _zoom_state["last_toggled"] = time.time()
     zoom_reader.trigger_refresh()
     return jsonify({"status": "toggled video + mic", **_public_state()})
+
+
+# ---- Auth / lock routes --------------------------------------------------
+# All lock UIs render the active skin's template.html. The skin is pure
+# presentation; auth state lives in the Flask session and the PIN store.
+# Login attempts are rate-limited per IP by pew_ptz.auth.RateLimiter.
+
+_SKIN_TEMPLATE = active_skin.template_path.read_text(encoding="utf-8")
+
+
+def _client_ip() -> str:
+    # No reverse proxy in the chapel deployment — remote_addr is the peer.
+    return request.remote_addr or "unknown"
+
+
+def _render_lock(**overrides) -> str:
+    """Render the active skin with a lock context dict. Defaults are tuned
+    for the /login page; admin routes override what they need."""
+    ctx = {
+        "skin_name": active_skin.name,
+        "title": "PEW · PTZ",
+        "subtitle": "Enter PIN",
+        "submit_url": "/login",
+        "on_success_url": "/",
+        "mode": "login",
+        "idle_message": "Rotate the dials — auto-submits at 4 digits",
+        "error_message": None,
+        "lockout_seconds_remaining": 0,
+        "extra_payload": {},
+        "cancel_url": None,
+    }
+    ctx.update(overrides)
+    return render_template_string(_SKIN_TEMPLATE, lock=ctx)
+
+
+def _lockout_remaining(ip: str) -> int:
+    until = rate_limiter.locked_until(ip)
+    return max(0, int(until - time.time())) if until else 0
+
+
+def _locked_response(remaining: int):
+    return jsonify({
+        "error": "locked",
+        "lockout_seconds_remaining": remaining,
+    }), 429
+
+
+@app.before_request
+def _enforce_absolute_session():
+    """Absolute (not sliding) session timeout. Flask's cookie max-age is
+    sliding by default; we enforce login_at + SESSION_HOURS server-side so
+    a tablet left polling doesn't stay authenticated forever."""
+    if auth_disabled():
+        return
+    role = session.get("role")
+    if role and time.time() - session.get("login_at", 0) > SESSION_HOURS * 3600:
+        log.info("auth: %s session expired (absolute timeout)", role)
+        session.clear()
+
+
+@app.get("/login")
+def login():
+    if current_role() is not None:
+        return redirect("/")
+    ip = _client_ip()
+    if not pin_store.is_configured():
+        return _render_lock(
+            subtitle="Not configured",
+            idle_message="PINs not set on this server. See README.",
+            error_message="PINs not set on this server. See README.",
+        )
+    return _render_lock(lockout_seconds_remaining=_lockout_remaining(ip))
+
+
+@app.post("/login")
+def login_submit():
+    ip = _client_ip()
+    remaining = _lockout_remaining(ip)
+    if remaining:
+        return _locked_response(remaining)
+    if not pin_store.is_configured():
+        return jsonify({
+            "error": "PINs not configured. Run 'python -m pew_ptz.auth set'."
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    pin = str(data.get("pin", ""))
+    role = pin_store.verify(pin)
+    if role is None:
+        until = rate_limiter.record_failure(ip)
+        log.warning("auth: failed login from %s", ip)
+        if until:
+            return _locked_response(max(1, int(until - time.time())))
+        return jsonify({"error": "wrong PIN"}), 401
+
+    rate_limiter.record_success(ip)
+    session.clear()
+    session["role"] = role
+    session["login_at"] = int(time.time())
+    session.permanent = True
+    log.info("auth: %s logged in from %s", role, ip)
+    return jsonify({"ok": True, "role": role, "redirect": "/"})
+
+
+@app.post("/logout")
+def logout():
+    role = session.get("role")
+    session.clear()
+    if role:
+        log.info("auth: %s logged out from %s", role, _client_ip())
+    return jsonify({"ok": True, "redirect": "/login"})
+
+
+@app.get("/skin/<skin_name>/<path:asset>")
+def skin_asset(skin_name: str, asset: str):
+    """Serve a skin's static asset. send_from_directory rejects path
+    traversal; an unknown skin yields 404."""
+    skin_dir = skins_mod.skin_dir_for(skin_name)
+    if skin_dir is None:
+        abort(404)
+    return send_from_directory(skin_dir, asset)
+
+
+# ---- Admin: change PIN ---------------------------------------------------
+# Two-step flow:
+#   1. /admin/change-pin?role=X       — confirm admin PIN  → POST /admin/reverify
+#   2. /admin/change-pin/set?role=X   — enter new PIN      → POST /admin/pin
+# The re-verify guards against an unlocked tablet. Even an active admin
+# session can't rotate PINs without proving the admin PIN one more time
+# (within ADMIN_REVERIFY_WINDOW_SEC).
+
+
+def _admin_reverify_fresh() -> bool:
+    return session.get("admin_reverify_until", 0) > time.time()
+
+
+@app.get("/admin/change-pin")
+@require_admin
+def admin_change_pin_step1():
+    role = request.args.get("role", "")
+    if role not in ("user", "admin"):
+        return redirect("/")
+    return _render_lock(
+        title=f"CHANGE {role.upper()} PIN",
+        subtitle="Confirm ADMIN PIN to continue",
+        mode="reverify",
+        submit_url="/admin/reverify",
+        on_success_url=url_for("admin_change_pin_step2", role=role),
+        idle_message="Confirm admin PIN — auto-submits at 4 digits",
+        cancel_url="/",
+    )
+
+
+@app.post("/admin/reverify")
+@require_admin
+def admin_reverify():
+    ip = _client_ip()
+    remaining = _lockout_remaining(ip)
+    if remaining:
+        return _locked_response(remaining)
+    data = request.get_json(silent=True) or {}
+    pin = str(data.get("pin", ""))
+    if pin_store.verify(pin) != "admin":
+        until = rate_limiter.record_failure(ip)
+        log.warning("auth: failed admin reverify from %s", ip)
+        if until:
+            return _locked_response(max(1, int(until - time.time())))
+        return jsonify({"error": "wrong admin PIN"}), 401
+    rate_limiter.record_success(ip)
+    session["admin_reverify_until"] = int(time.time()) + ADMIN_REVERIFY_WINDOW_SEC
+    return jsonify({"ok": True})
+
+
+@app.get("/admin/change-pin/set")
+@require_admin
+def admin_change_pin_step2():
+    role = request.args.get("role", "")
+    if role not in ("user", "admin"):
+        return redirect("/")
+    if not _admin_reverify_fresh():
+        return redirect(url_for("admin_change_pin_step1", role=role))
+    return _render_lock(
+        title=f"CHANGE {role.upper()} PIN",
+        subtitle=f"Enter new {role.upper()} PIN",
+        mode="set-pin",
+        submit_url="/admin/pin",
+        on_success_url="/",
+        idle_message="New PIN — auto-submits at 4 digits",
+        extra_payload={"role": role},
+        cancel_url="/",
+    )
+
+
+@app.post("/admin/pin")
+@require_admin
+def admin_set_pin():
+    if not _admin_reverify_fresh():
+        return jsonify({
+            "error": "re-verify required",
+            "redirect": "/admin/change-pin",
+        }), 401
+    data = request.get_json(silent=True) or {}
+    pin = str(data.get("pin", ""))
+    role = str(data.get("role", ""))
+    if role not in ("user", "admin"):
+        return jsonify({"error": "invalid role"}), 400
+    try:
+        pin_store.set_pin(role, pin)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    # Burn the reverify so a second rotation requires a fresh confirm.
+    session.pop("admin_reverify_until", None)
+    log.info("auth: %s PIN changed by admin from %s", role, _client_ip())
+    return jsonify({"ok": True, "redirect": "/"})
 
 
 # ---- Inline template -----------------------------------------------------
@@ -446,9 +716,45 @@ INDEX_HTML = r"""<!doctype html>
     .pill.warn { background: #92400e; color: #fde68a; }
     .pill.air-on  { background: #b91c1c; color: #fff1f2; }
     .pill.air-off { background: #064e3b; color: #d1fae5; }
+    .admin-fab {
+      position: fixed; top: 12px; right: 12px; z-index: 100;
+      width: 44px; height: 44px; border-radius: 50%;
+      background: #1f2937; color: #fbbf24;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.3rem; box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+      cursor: pointer; user-select: none;
+    }
+    .admin-fab:active { background: #0b1220; }
+    .admin-menu {
+      position: fixed; top: 64px; right: 12px; z-index: 100;
+      background: #111827; border: 1px solid #1f2937; border-radius: 12px;
+      padding: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+      display: none; min-width: 200px;
+    }
+    .admin-menu.show { display: block; }
+    .admin-menu a, .admin-menu button {
+      display: block; width: 100%; text-align: left;
+      background: transparent; border: 0; color: #e0f2fe;
+      padding: 12px 14px; border-radius: 8px; font: inherit;
+      text-decoration: none; cursor: pointer;
+    }
+    .admin-menu a:active, .admin-menu button:active { background: #1f2937; }
+    .admin-menu hr { border: 0; border-top: 1px solid #1f2937; margin: 4px 0; }
   </style>
 </head>
-<body>
+<body data-role="{{ role }}">
+  {% if auth_enabled and role == "admin" %}
+  <div class="admin-fab" id="adminFab" aria-label="admin menu">⚙</div>
+  <div class="admin-menu" id="adminMenu">
+    <a href="/admin/change-pin?role=user">Change user PIN</a>
+    <a href="/admin/change-pin?role=admin">Change admin PIN</a>
+    <hr>
+    <button id="logoutBtn">Log out</button>
+  </div>
+  {% elif auth_enabled and role == "user" %}
+  <div class="admin-fab" id="adminFab" aria-label="log out" style="font-size:0.7rem;font-weight:700;letter-spacing:0.1em;color:#94a3b8;">OUT</div>
+  {% endif %}
+
   <div class="preview-wrap">
     <img id="preview" alt="Live preview"
          src="http://{{ camera_ip }}{{ camera_snapshot_path }}" />
@@ -515,9 +821,16 @@ INDEX_HTML = r"""<!doctype html>
     toastTimer = setTimeout(() => toast.classList.remove("show"), 1200);
   }
 
+  // Any 401 from any fetch — session expired or auth gone. Bounce to /login
+  // immediately rather than letting the page sit polling a dead endpoint.
+  function _on401() {
+    window.location.href = "/login";
+  }
+
   async function post(path) {
     try {
-      const r = await fetch(path, { method: "POST" });
+      const r = await fetch(path, { method: "POST", credentials: "same-origin" });
+      if (r.status === 401) { _on401(); return; }
       const j = await r.json().catch(() => ({}));
       if (r.status === 409 && j.foreground_process !== undefined) {
         flash("⚠ Zoom not focused (" + (j.foreground_process || "unknown") + ")");
@@ -528,6 +841,27 @@ INDEX_HTML = r"""<!doctype html>
     } catch (e) {
       flash("⚠ network");
     }
+  }
+
+  // ---- admin gear / logout ----
+  const adminFab = document.getElementById("adminFab");
+  const adminMenu = document.getElementById("adminMenu");
+  const role = document.body.dataset.role;
+  if (adminFab && role === "admin") {
+    adminFab.addEventListener("click", (e) => {
+      e.stopPropagation();
+      adminMenu.classList.toggle("show");
+    });
+    document.addEventListener("click", () => adminMenu.classList.remove("show"));
+    document.getElementById("logoutBtn").addEventListener("click", async () => {
+      await fetch("/logout", { method: "POST", credentials: "same-origin" });
+      window.location.href = "/login";
+    });
+  } else if (adminFab && role === "user") {
+    adminFab.addEventListener("click", async () => {
+      await fetch("/logout", { method: "POST", credentials: "same-origin" });
+      window.location.href = "/login";
+    });
   }
 
   // ---- hold-to-move for D-pad ----
@@ -654,7 +988,8 @@ INDEX_HTML = r"""<!doctype html>
   }
   async function refreshZoomStatus() {
     try {
-      const r = await fetch("/zoom_meeting/state");
+      const r = await fetch("/zoom_meeting/state", { credentials: "same-origin" });
+      if (r.status === 401) { _on401(); return; }
       if (r.ok) renderZoomStatus(await r.json());
     } catch (e) { /* network blip — ignore */ }
   }
@@ -688,6 +1023,13 @@ def main():
     log.info("  Camera:        %s:%s", CAMERA_IP, VISCA_PORT)
     log.info("  Presets:       %s", PRESETS)
     log.info("  Open on phone: http://<this-pc-ip>:%s", SERVER_PORT)
+    log.info("  Auth skin:     %s", active_skin.name)
+    log.info("  PIN store:     %s", pin_store.path)
+    if auth_disabled():
+        log.warning("  AUTH DISABLED via PEW_PTZ_AUTH_DISABLED — anyone on LAN has admin.")
+    elif not pin_store.is_configured():
+        log.warning("  PINs not configured. Run: python -m pew_ptz.auth set --role user")
+        log.warning("                       and: python -m pew_ptz.auth set --role admin")
     if _kbd is None:
         log.warning("  pynput keyboard unavailable — Zoom hotkeys disabled.")
     if zoom_reader.available:
