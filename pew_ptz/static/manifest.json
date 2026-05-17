@@ -1,0 +1,19 @@
+{
+  "name": "pew-ptz",
+  "short_name": "pew-ptz",
+  "description": "Phone-based PTZ camera control + Zoom mute/video toggles.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0f172a",
+  "background_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

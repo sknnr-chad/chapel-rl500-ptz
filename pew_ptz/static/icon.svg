@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="pew-ptz">
+  <!-- Maskable PWA icon: outer 20% may be cropped by the OS to a circle / squircle.
+       All meaningful content stays inside the centered safe-zone circle. -->
+  <defs>
+    <radialGradient id="brass" cx="50%" cy="40%" r="65%">
+      <stop offset="0%" stop-color="#e8c982"/>
+      <stop offset="55%" stop-color="#b8860b"/>
+      <stop offset="100%" stop-color="#7a5a1a"/>
+    </radialGradient>
+  </defs>
+  <!-- Background fills the full square so masking never reveals transparent corners -->
+  <rect width="512" height="512" fill="#1a0f08"/>
+  <!-- Brass disc centered in the safe zone -->
+  <circle cx="256" cy="256" r="200" fill="url(#brass)" stroke="#3a2810" stroke-width="6"/>
+  <!-- Engraved "P·P" wordmark -->
+  <text x="256" y="296"
+        text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', serif"
+        font-weight="700"
+        font-size="220"
+        fill="#1a0e05">P&middot;P</text>
+</svg>
